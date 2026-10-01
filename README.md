@@ -5,11 +5,13 @@
 ![Hydra](https://img.shields.io/badge/config-Hydra-89b8cd)
 ![PennyLane](https://img.shields.io/badge/quantum-PennyLane%20simulator-ff69b4)
 
-A configurable research pipeline for four-class brain MRI classification. It combines classical image features, spatially adaptive multiscale convolutions, simulated quantum circuits, and feature fusion.
+A configurable research pipeline for four-class brain MRI classification. It combines a pretrained classical backbone, spatially adaptive multiscale convolutions, simulated quantum circuits, and feature fusion.
+
+> **Branch: `swin-backbone`.** On this branch, the final model's classical branch is **Swin-T** (768 features). The original **EfficientNet-B0** arm (1280 features) is still here, unchanged and runnable, as the comparison arm. Swin-T was chosen because it had the best validation macro-F1 of the seven Step 9 baselines. See [The Two Backbone Arms](#the-two-backbone-arms).
 
 The repository covers dataset preparation, model training, controlled comparisons, evaluation, explainability, and statistical reporting. These are organized around the experiments in the [research specification](docs/Instruction%20BY%20asif%20vai.md).
 
-> **Research status:** The training and analysis components are implemented and covered by tests. No full-protocol study has been completed. The ablation stages (Steps 21–25) and the real-backbone preprocessing confirmation still need to be run and validated. Read [Known Limitations](#known-limitations) before running the study or interpreting its outputs.
+> **Research status:** The training and analysis components are implemented and covered by tests. The Swin-T arm has been run. Its result files (checkpoints, tables, summaries) are not committed to this repository. Read [Known Limitations](#known-limitations) before interpreting any outputs.
 
 ---
 
@@ -19,6 +21,7 @@ The repository covers dataset preparation, model training, controlled comparison
 - [Key Features](#key-features)
 - [Technology Stack](#technology-stack)
 - [Architecture](#architecture)
+- [The Two Backbone Arms](#the-two-backbone-arms)
 - [Project Structure](#project-structure)
 - [How the System Works](#how-the-system-works)
 - [Getting Started](#getting-started)
@@ -29,7 +32,7 @@ The repository covers dataset preparation, model training, controlled comparison
 - [Testing](#testing)
 - [Running on Kaggle](#running-on-kaggle)
 - [Out of Scope](#out-of-scope)
-- [Recorded Dataset Observations](#recorded-dataset-observations)
+- [Recorded Observations](#recorded-observations)
 - [Known Limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
@@ -63,6 +66,7 @@ The project tests whether adaptive feature extraction and quantum transformation
 - Does a learned mixture of quantum circuits add useful feature information?
 - Which feature-fusion and loss formulations perform best on validation data?
 - How do the models behave on external data, on degraded images, and under ablation?
+- Does the choice of classical backbone (Swin-T vs. EfficientNet-B0) change these conclusions?
 
 ---
 
@@ -73,14 +77,15 @@ The project tests whether adaptive feature extraction and quantum transformation
 - **Preprocessing study:** compares anisotropic diffusion, Wiener filtering, CLAHE, adaptive gamma, and log transform. Selected recipes are cached to disk.
 - **Imbalance study:** compares class weighting, focal loss (a corrected form and the legacy notebook form), weighted sampling, and augmentation.
 - **Seven baselines:** a simple CNN, ResNet-50, EfficientNet-B0, ViT-B/16, Swin-T, a fixed quantum CNN, and a fixed multiscale CNN.
+- **Two classical-branch arms:** Swin-T (final model) and EfficientNet-B0 (original arm). Each has separate configs, feature caches, and run directories, so neither can overwrite the other.
 - **Spatially adaptive multiscale branch:** a per-pixel softmax gate over 3×3, 5×5, and dilated 3×3 convolution paths, with an 8-arm ablation.
-- **Adaptive quantum branch:** a learned, per-image soft mixture of five simulated 4-qubit circuits.
+- **Adaptive quantum branch:** a learned, per-image soft mixture of five simulated 4-qubit circuits. Both backbone arms share the same trained checkpoint.
 - **Cached branch features** for fast training of the fusion head.
 - **Three fusion strategies:** concatenation, squeeze-and-excitation (SE), and gated fusion.
 - **Evaluation:** internal test, external (Figshare) test, calibration metrics (ECE, Brier score), and robustness sweeps over noise, contrast, blur, resolution, and intensity.
-- **Explainability:** Grad-CAM, SHAP attribution on the fused vector, MC-dropout uncertainty, and deletion/insertion sanity checks.
+- **Explainability:** Grad-CAM, with layer selection that handles Swin's channels-last feature maps. Also SHAP attribution on the fused vector, MC-dropout uncertainty, and deletion/insertion sanity checks.
 - **Statistics:** McNemar, paired bootstrap, Wilcoxon, and Holm–Bonferroni correction, plus research-question mapping.
-- **Resumable pipeline runner** with smoke, fast, and full profiles, built to survive Kaggle's 12-hour session limit.
+- **Resumable pipeline runner** with smoke, fast, and full profiles, built to survive Kaggle's 12-hour session limit. It drives the EfficientNet-B0 arm only.
 
 ---
 
@@ -89,7 +94,7 @@ The project tests whether adaptive feature extraction and quantum transformation
 | Area | Libraries and tools |
 |---|---|
 | Language | Python |
-| Deep learning | PyTorch, torchvision, Lightning, TorchMetrics |
+| Deep learning | PyTorch, torchvision (Swin-T, EfficientNet-B0, ResNet-50, ViT-B/16), Lightning, TorchMetrics |
 | Configuration | Hydra (`hydra-core`, `hydra-colorlog`), OmegaConf, rootutils |
 | Quantum simulation | PennyLane (`default.qubit` simulator, `qml.qnn.TorchLayer`) |
 | Data and statistics | NumPy, pandas, SciPy, scikit-learn |
@@ -117,13 +122,15 @@ flowchart TD
     C --> F[Image datamodule]
     E --> F
 
-    F --> G[Classical EfficientNet-B0 branch]
+    F --> I[Seven baselines]
+    I --> SEL[Backbone chosen on validation: Swin-T]
+    SEL --> G[Classical branch: Swin-T]
+    F --> G
     F --> H[Spatial multiscale and quantum branch]
-    F --> I[Baseline models]
 
     G --> J[Frozen feature extraction]
     H --> J
-    J --> K[Split-specific feature caches]
+    J --> K[Feature cache: tag swin]
     K --> L[Fusion and loss studies]
     L --> M[Final fusion classifier]
 
@@ -132,16 +139,15 @@ flowchart TD
     M --> N
 
     N --> O[Evaluation and explainability]
-    I --> P[Ablation and statistical analysis]
-    O --> P
+    O --> P[Ablation and statistical analysis]
     P --> Q[Research-question reports]
 ```
 
-### Proposed model
+### Proposed model (Swin-T arm)
 
 ```mermaid
 flowchart LR
-    X[224x224 MRI image] --> C1[EfficientNet-B0<br/>1280 features]
+    X[224x224 MRI image] --> C1[Swin-T<br/>768 features]
     X --> S1[Conv stem]
     S1 --> S2[3x3, 5x5, dilated 3x3 paths<br/>per-pixel softmax gate]
     S2 --> S3[Spatial features<br/>32]
@@ -158,10 +164,13 @@ flowchart LR
 
 | Component | Output width | Description |
 |---|---:|---|
-| Classical branch | 1,280 | EfficientNet-B0 image representation |
+| Classical branch (Swin-T) | 768 | ImageNet-pretrained Swin-T. Frozen except the last stages. |
+| Classical branch (EfficientNet-B0, comparison arm) | 1,280 | ImageNet-pretrained EfficientNet-B0 |
 | Spatial branch | 32 | Per-pixel gated mix of three parallel convolution paths |
 | Quantum branch | 4 | Weighted mixture of circuit expectation values |
-| Fused representation | 192 | Three 64-wide projections, concatenated |
+| Fused representation | 192 | Three 64-wide projections, concatenated (same for both arms) |
+
+Swapping the backbone changes only the classical projection layer: `Linear(768, 64)` for Swin-T instead of `Linear(1280, 64)`. The spatial branch, quantum branch, fused width, and classifier head are identical in both arms.
 
 **Spatial branch:** a shared stem downsamples by 4. Three paths follow: 3×3, 5×5, and dilated 3×3 (dilation 3). A small 1×1-conv gate head outputs a softmax over the three paths at every spatial location.
 
@@ -188,7 +197,7 @@ Quantum computation uses PennyLane's `default.qubit` CPU simulator. This reposit
 | 4 | Dataset audit and split preparation |
 | 6 (+ confirmation) | Preprocessing proxy ranking, then real-backbone confirmation |
 | 8 | Imbalance-handling comparison |
-| 9 | Seven baselines |
+| 9 | Seven baselines (this is where Swin-T was selected) |
 | 10–12 | Classical branch, multiscale arms and gate morphology, adaptive quantum branch |
 | 13–15 | Fusion comparison, loss selection, final classifier training |
 | 16–18 | Internal, external, and robustness evaluation |
@@ -199,30 +208,71 @@ Quantum computation uses PennyLane's `default.qubit` CPU simulator. This reposit
 
 ---
 
+## The Two Backbone Arms
+
+The Swin-T arm only adds files. No EfficientNet-B0 config was modified, and each arm writes to its own paths:
+
+| Resource | EfficientNet-B0 arm | Swin-T arm |
+|---|---|---|
+| Step 10 model config | `configs/model/branch_classical.yaml` | `configs/model/branch_classical_swin.yaml` |
+| Final classifier config | `configs/model/final_classifier.yaml` | `configs/model/final_classifier_swin.yaml` |
+| Feature extraction config | `configs/extract_features.yaml` | `configs/extract_features_swin.yaml` |
+| Feature cache | `data/features/default/` | `data/features/swin/` |
+| Step 10 runs | `logs/train/runs/step10_classical/seed_*` | `logs/train/runs/step10_classical_swin/seed_*` |
+| Step 15 runs | `logs/train/runs/step15_final/seed_*` | `logs/train/runs/step15_final_swin/seed_*` |
+| Analysis runs | `logs/analyze/runs/<step>` | `logs/analyze/runs/<step>_swin[/seed_*]` |
+| Step 21 training runs | `logs/train/runs/step21_ablation/` | `logs/train/runs/step21_ablation_swin/` |
+| Step 21–22 analysis root | `logs/analyze/runs/` | `logs/analyze/runs_swin/` |
+
+**Reused unchanged by the Swin-T arm:**
+- the split table, recipe mirrors, and the Step 4, 6, and 8 studies
+- all seven Step 9 baselines
+- Step 11
+- the **Step 12 quantum checkpoint**, which is the slowest stage in the study
+- Steps 24–25
+
+**Regenerated for Swin-T:**
+- Step 10 (3 seeds)
+- the `swin` feature cache
+- Steps 13–15
+- Steps 16–20
+- the backbone-dependent rows of Step 21 (A0–A2 and A6–A8)
+
+`configs/data/bt_mri.yaml` keeps the input size at 224, because Swin-T and ViT-B/16 have positional embeddings built for 224×224.
+
+---
+
 ## Project Structure
 
 ```text
 .
 ├── configs/                      # Hydra configuration
 │   ├── analysis/                 # One config per analysis stage (step04 … step25)
+│   │   └── *_swin.yaml           # Swin-T variants of Steps 13, 14, 16–21
 │   ├── callbacks/                # Checkpointing, early stopping, progress bar
 │   ├── data/                     # bt_mri, bt_mri_proxy, bt_mri_features, figshare
 │   ├── experiment/               # Experiment compositions (step06 … step25)
+│   │   ├── step10_classical_swin.yaml
+│   │   └── step15_final_protocol_swin.yaml
 │   ├── loss/                     # plain_ce, weighted_ce, focal, focal_legacy
-│   ├── model/                    # Baselines, branches, fusion heads, final classifier
+│   ├── model/                    # Baselines, branches, fusion heads, final classifiers
+│   │   ├── branch_classical_swin.yaml
+│   │   └── final_classifier_swin.yaml
 │   ├── protocol/fixed.yaml       # Shared training protocol
 │   ├── trainer/                  # cpu, gpu, mps, ddp, ddp_sim, default
 │   ├── logger/                   # csv, tensorboard, wandb, mlflow, …
 │   ├── train.yaml                # Entry config for src/train.py
 │   ├── eval.yaml                 # Entry config for src/eval.py
 │   ├── analyze.yaml              # Entry config for src/analyze.py
-│   ├── extract_features.yaml     # Entry config for src/extract_features.py
+│   ├── extract_features.yaml     # Feature extraction, EfficientNet-B0 arm
+│   ├── extract_features_swin.yaml  # Feature extraction, Swin-T arm
 │   └── prepare_dataset.yaml      # Entry config for src/prepare_dataset.py
 ├── data/                         # Raw data, splits, and generated caches (git-ignored)
 ├── docs/
 │   ├── Instruction BY asif vai.md   # Research specification
 │   ├── IMPLEMENTATION_PLAN.md       # Notebook-to-repository mapping
-│   └── DEVIATIONS.md                # Deviation register
+│   ├── DEVIATIONS.md                # Deviation register
+│   └── SWIN_EXPERIMENT.md           # Swin-T arm execution guide
 ├── logs/                         # Hydra run outputs (git-ignored)
 ├── notebooks/
 │   ├── kaggle_run.ipynb          # Kaggle execution wrapper (generated)
@@ -230,7 +280,7 @@ Quantum computation uses PennyLane's `default.qubit` CPU simulator. This reposit
 ├── scripts/
 │   ├── download_data.sh          # Kaggle dataset download (Linux/macOS)
 │   ├── download_data.ps1         # Kaggle dataset download (Windows)
-│   ├── kaggle_pipeline.py        # Resumable end-to-end pipeline runner
+│   ├── kaggle_pipeline.py        # Resumable pipeline runner (EfficientNet-B0 arm)
 │   ├── make_kaggle_notebook.py   # Regenerates notebooks/kaggle_run.ipynb
 │   └── schedule.sh               # Template example of sequential runs
 ├── src/
@@ -252,7 +302,7 @@ Quantum computation uses PennyLane's `default.qubit` CPU simulator. This reposit
 │   ├── analyze.py                # Analysis entry point
 │   ├── extract_features.py       # Feature-cache entry point
 │   └── prepare_dataset.py        # Preprocessing-mirror entry point
-├── tests/                        # pytest suite
+├── tests/                        # pytest suite (incl. test_grad_cam_target_layer.py)
 ├── .github/                      # CI workflows, PR template, Dependabot
 ├── .env.example                  # Environment variable template
 ├── .pre-commit-config.yaml
@@ -262,7 +312,7 @@ Quantum computation uses PennyLane's `default.qubit` CPU simulator. This reposit
 ├── pyproject.toml                # pytest and coverage settings
 ├── requirements.txt
 ├── setup.py
-├── USAGE.md                      # Detailed step-by-step usage guide
+├── USAGE.md                      # Detailed step-by-step usage guide (EfficientNet-B0 arm)
 └── README.md
 ```
 
@@ -277,11 +327,11 @@ All entry points are Hydra applications. Each run composes its configuration fro
 1. **Download.** `scripts/download_data.*` fetches the primary dataset (and optionally Figshare) from Kaggle into `data/raw/`.
 2. **Audit and split** (`src/analyze.py analysis=step04_audit`). Pools the vendor `Training/` and `Testing/` folders and hashes every file. It removes exact duplicates and writes a stratified split to `data/splits/dataset_split.csv`. Every later stage reads this one table.
 3. **Selection studies** (Steps 6 and 8). Small proxy models on a balanced subset rank preprocessing recipes and imbalance strategies. `src/prepare_dataset.py` writes the chosen recipe to `data/processed/<recipe>/`.
-4. **Training** (`src/train.py`). Hydra builds a datamodule, a `LightningModule`, callbacks, loggers, and a trainer. Image models use `MRIClassificationModule`; fusion heads use `FeatureFusionModule`.
-5. **Feature caching** (`src/extract_features.py`). Loads the trained Step 10 and Step 12 checkpoints, freezes them, and saves classical, spatial, and quantum features for each split to `data/features/<tag>/`.
-6. **Fusion** (Steps 13–15). Fusion heads train on the cached tensors, which takes the quantum simulator out of the training loop.
-7. **Evaluation and reporting** (`src/analyze.py`, Steps 16–25). `FullPipeline` rebuilds the full image-to-logits model from three checkpoints and runs internal and external tests, robustness, explainability, ablation, and statistics.
-8. **Orchestration** (`scripts/kaggle_pipeline.py`). Runs every stage in order with fixed output directories and completion markers. It passes the Step 6, 8, 13, and 14 selections on to later stages.
+4. **Baselines and backbone choice** (Step 9). The seven baselines train under the fixed protocol. Swin-T had the highest validation macro-F1 and became the classical branch.
+5. **Branch training** (`src/train.py`, Steps 10–12). Image models use `MRIClassificationModule`. The Swin-T classical branch trains in Step 10; the spatial/quantum branch trains once in Step 12.
+6. **Feature caching** (`src/extract_features.py --config-name extract_features_swin`). Loads the Step 10 Swin-T and Step 12 checkpoints, freezes them, and saves classical (768), spatial (32), and quantum (4) features for each split to `data/features/swin/`.
+7. **Fusion** (Steps 13–15). Fusion heads (`FeatureFusionModule`) train on the cached tensors, which takes the quantum simulator out of the training loop.
+8. **Evaluation and reporting** (`src/analyze.py`, Steps 16–23). `FullPipeline` rebuilds the full image-to-logits model from the three checkpoints and runs internal and external tests, robustness, explainability, quantum-contribution analysis, ablation, and statistics.
 
 ---
 
@@ -290,15 +340,15 @@ All entry points are Hydra applications. Each run composes its configuration fro
 ### Prerequisites
 
 - **Python 3.10 or newer.** `environment.yaml` specifies 3.10, and a comment in `requirements.txt` notes PennyLane was verified on Python 3.13.
-- PyTorch and torchvision builds that work together. For full classical training, use a CUDA build.
+- PyTorch and torchvision builds that work together. Use a CUDA build for Swin-T and the other pretrained backbones.
 - **A CUDA-capable GPU** for practical full-study runs. Quantum simulation always runs on CPU.
 - **Kaggle API credentials** for the dataset download scripts.
 - Enough disk space for datasets, processed images, checkpoints, and feature caches.
 
-### 1. Clone the repository
+### 1. Clone the `swin-backbone` branch
 
 ```bash
-git clone https://github.com/Biswadev-9/thesis.git
+git clone -b swin-backbone https://github.com/Biswadev-9/thesis.git
 cd thesis
 ```
 
@@ -328,8 +378,6 @@ python -m pip install -e .          # exposes `train_command` and `eval_command`
 
 ### 3. Configure environment variables
 
-Copy the template and fill in your values:
-
 ```bash
 cp .env.example .env
 ```
@@ -351,28 +399,15 @@ cp .env.example .env
 | Primary (4 classes, 7,023 images) | `mohamadabouali1/mri-brain-tumor-dataset-4-class-7023-images` | `data/raw/bt_mri/` | Train / validation / internal test |
 | External (3 tumor classes) | `ashkhagan/figshare-brain-tumor-dataset` | `data/raw/figshare/` | Step 17 external validation |
 
-Linux/macOS:
-
 ```bash
-bash scripts/download_data.sh --external   # omit --external for the primary dataset only
+bash scripts/download_data.sh --external     # Linux/macOS; omit --external for primary only
 ```
-
-Windows PowerShell:
 
 ```powershell
-.\scripts\download_data.ps1 -IncludeExternal
+.\scripts\download_data.ps1 -IncludeExternal # Windows PowerShell
 ```
 
-Both scripts accept a force option (`--force` / `-Force`) to download again. The expected layout is:
-
-```text
-data/
-└── raw/
-    ├── bt_mri/            # contains Training/ and Testing/ (may be nested inside the archive)
-    └── figshare/          # .mat files
-```
-
-The loader looks inside nested archive folders for a directory that contains both `Training/` and `Testing/`, and it accepts common aliases for class-folder names. This keeps it from picking the archive's degraded `Challenging Datasets/` copy. If your layout differs, set `data.raw_subdir` explicitly.
+Both scripts accept a force option (`--force` / `-Force`) to download again. The loader looks inside nested archive folders for a directory that contains both `Training/` and `Testing/`. This keeps it from picking the archive's degraded `Challenging Datasets/` copy. If your layout differs, set `data.raw_subdir` explicitly.
 
 ### 5. Audit the data and build the split
 
@@ -380,7 +415,7 @@ The loader looks inside nested archive folders for a directory that contains bot
 python src/analyze.py analysis=step04_audit
 ```
 
-This writes `data/splits/dataset_split.csv`: a stratified 70/15/15 image-level split made after exact-hash deduplication.
+This writes `data/splits/dataset_split.csv`: a stratified 70/15/15 image-level split made after exact-hash deduplication. Both backbone arms use this one table.
 
 > This does not make the split patient-independent and does not remove near-duplicates.
 
@@ -404,13 +439,13 @@ Hydra builds each run's configuration from [`configs/`](configs). Common overrid
 | `data.augment`, `data.use_weighted_sampler` | Training-split augmentation and balanced sampling |
 | `test=<bool>` | Run the test set after training (**defaults to `True`**) |
 | `logger=<name>` | `csv`, `tensorboard`, `wandb`, `mlflow`, `neptune`, `comet`, `aim`, `many_loggers` |
-| `debug=<name>` | `default`, `fdr`, `limit`, `overfit`, `profiler` |
+| `hydra.run.dir=<path>` | Pin the output directory. **Required for the Swin-T commands** so runs land in the paths later stages read |
 
 The default MRI input is 224×224 with ImageNet normalization. Background cropping is off by default.
 
 ### Fixed training protocol
 
-[`configs/protocol/fixed.yaml`](configs/protocol/fixed.yaml) defines the shared protocol:
+[`configs/protocol/fixed.yaml`](configs/protocol/fixed.yaml) defines the protocol shared by both arms:
 
 | Setting | Value |
 |---|---|
@@ -424,22 +459,188 @@ The default MRI input is 224×224 with ImageNet normalization. Background croppi
 | Selection metric | `val/f1_macro` |
 | Full-run seeds | `42`, `123`, `7` |
 
-Running `python src/train.py` with no arguments does **not** apply this protocol (`protocol: null` by default). Use one of the experiment configs that includes it.
+Running `python src/train.py` with no arguments does **not** apply this protocol. The `step10_classical_swin` and `step15_final_protocol_swin` experiments both include it.
 
-> **Test-set access:** `configs/train.yaml` defaults to `test: True`. The training examples below pass `test=false` so the test set is not touched during development.
+> **Test-set access:** `configs/train.yaml` defaults to `test: True`. Always pass `test=false` when training so the once-only Step 16 test budget is not used up early.
 
 ---
 
 ## Usage
 
-### Option A: Run the pipeline with one command
+### Shared stages (run once, used by both arms)
 
-[`scripts/kaggle_pipeline.py`](scripts/kaggle_pipeline.py) runs every stage in order. It pins output directories, skips completed stages, resumes training from `last.ckpt`, and passes upstream selections on to later stages.
+The Step 4–9, 11, and 12 stages are the same for both arms. The easiest way to produce them is the pipeline runner:
 
 ```bash
-python scripts/kaggle_pipeline.py --list --profile full   # print the stage graph; runs nothing
-python scripts/kaggle_pipeline.py --profile smoke         # quick wiring check
-python scripts/kaggle_pipeline.py --profile full          # intended study run
+python scripts/kaggle_pipeline.py --list --profile full                       # print the stage graph
+python scripts/kaggle_pipeline.py --profile full --until step12_adaptive_quantum
+```
+
+The runner also builds the full **EfficientNet-B0** arm (Steps 10 and 13–25) when it is run without `--until`. It has **no Swin-T stages**, so run the Swin-T arm with the commands below.
+
+Manual equivalents of the shared stages:
+
+```bash
+python src/analyze.py analysis=step06_preprocessing
+python src/analyze.py analysis=step08_imbalance
+python src/train.py experiment=step09_baselines model=baseline_swin trainer=gpu seed=42 logger=csv test=false
+python src/train.py experiment=step12_adaptive_quantum seed=42 logger=csv test=false
+```
+
+### Swin-T arm
+
+Full step-by-step guide: [docs/SWIN_EXPERIMENT.md](docs/SWIN_EXPERIMENT.md). Every command pins `hydra.run.dir` so outputs land where the next stage expects them.
+
+```bash
+QCKPT=logs/train/runs/step12_adaptive_quantum/seed_42     # Step 12 checkpoint, reused
+```
+
+**Step 10: Swin-T classical branch (3 seeds)**
+
+```bash
+for SEED in 42 123 7; do
+  python src/train.py experiment=step10_classical_swin seed=$SEED \
+    trainer=gpu logger=csv test=false data.num_workers=0 \
+    hydra.run.dir=logs/train/runs/step10_classical_swin/seed_$SEED
+done
+```
+
+**Feature cache (tag `swin`)**
+
+```bash
+python src/extract_features.py --config-name extract_features_swin \
+  classical_ckpt=logs/train/runs/step10_classical_swin/seed_42 \
+  quantum_ckpt=$QCKPT data.num_workers=0 \
+  hydra.run.dir=logs/extract_features/runs/features_swin
+```
+
+Check that `data/features/swin/manifest.json` reports `classical_dim: 768`. If it says 1280, the wrong config was used.
+
+**Steps 13–14: fusion strategy and loss**
+
+```bash
+python src/analyze.py analysis=step13_fusion_swin \
+  hydra.run.dir=logs/analyze/runs/step13_fusion_swin
+
+python src/analyze.py analysis=step14_loss_selection_swin \
+  hydra.run.dir=logs/analyze/runs/step14_loss_selection_swin
+
+LOSS=$(python -c "import json;print(json.load(open('logs/analyze/runs/step14_loss_selection_swin/step14_loss_selection_summary.json'))['selected_loss'])")
+```
+
+**Step 15: final model (3 seeds)**
+
+```bash
+for SEED in 42 123 7; do
+  python src/train.py experiment=step15_final_protocol_swin seed=$SEED \
+    loss@model.criterion=$LOSS trainer=gpu logger=csv test=false \
+    hydra.run.dir=logs/train/runs/step15_final_swin/seed_$SEED
+done
+```
+
+**Step 16: internal test (once per seed)**
+
+```bash
+for SEED in 42 123 7; do
+  python src/analyze.py analysis=step16_internal_swin \
+    analysis.classical_ckpt=logs/train/runs/step10_classical_swin/seed_42 \
+    analysis.quantum_ckpt=$QCKPT \
+    analysis.fusion_ckpt=logs/train/runs/step15_final_swin/seed_$SEED \
+    data.recipe=null data.num_workers=0 \
+    hydra.run.dir=logs/analyze/runs/step16_internal_swin/seed_$SEED
+done
+```
+
+Step 16 writes a `test_evaluated.lock` next to each fusion checkpoint. Do not pass `analysis.force=true`. Report the mean ± SD over the three seeds.
+
+**Steps 17–20: external, robustness, explainability, quantum contribution**
+
+```bash
+C=logs/train/runs/step10_classical_swin/seed_42
+F=logs/train/runs/step15_final_swin/seed_42
+
+python src/analyze.py analysis=step17_external_swin data=figshare \
+  analysis.classical_ckpt=$C analysis.quantum_ckpt=$QCKPT analysis.fusion_ckpt=$F \
+  analysis.internal_summary=logs/analyze/runs/step16_internal_swin/seed_42/step16_internal_summary.json \
+  hydra.run.dir=logs/analyze/runs/step17_external_swin
+
+python src/analyze.py analysis=step18_robustness_swin \
+  analysis.models.proposed.classical_ckpt=$C \
+  analysis.models.proposed.quantum_ckpt=$QCKPT \
+  analysis.models.proposed.fusion_ckpt=$F \
+  analysis.models.efficientnet_b0.ckpt=logs/train/runs/step09_baselines/baseline_efficientnet_b0/seed_42 \
+  analysis.models.vit.ckpt=logs/train/runs/step09_baselines/baseline_vit/seed_42 \
+  hydra.run.dir=logs/analyze/runs/step18_robustness_swin
+
+python src/analyze.py analysis=step19_explainability_swin \
+  analysis.classical_ckpt=$C analysis.quantum_ckpt=$QCKPT analysis.fusion_ckpt=$F \
+  hydra.run.dir=logs/analyze/runs/step19_explainability_swin
+
+python src/analyze.py analysis=step20_quantum_advantage_swin \
+  analysis.fusion_ckpt=$F \
+  analysis.loss_summary=logs/analyze/runs/step14_loss_selection_swin/step14_loss_selection_summary.json \
+  "analysis.run_dirs={classical: $C, quantum: $QCKPT}" \
+  hydra.run.dir=logs/analyze/runs/step20_quantum_advantage_swin
+```
+
+In Step 18, `models.efficientnet_b0` and `models.vit` stay as the CNN and Transformer comparison baselines on purpose.
+
+**Step 21: ablation matrix (Swin-T arm)**
+
+```bash
+python src/analyze.py analysis=step21_ablation_swin \
+  analysis.step06_summary=logs/analyze/runs/step06_preprocessing/step06_preprocessing_summary.json \
+  analysis.step14_summary=logs/analyze/runs/step14_loss_selection_swin/step14_loss_selection_summary.json \
+  analysis.step16_summary=logs/analyze/runs/step16_internal_swin/seed_42/step16_internal_summary.json \
+  hydra.run.dir=logs/analyze/runs_swin/step21_ablation
+```
+
+| Rows | What happens in the Swin-T arm |
+|---|---|
+| A0, A1, A2 | Retrained with the Swin-T backbone |
+| A3, A4, A5 | Reused from the EfficientNet-B0 era (no pretrained backbone inside), linked under `logs/train/runs/step21_ablation_swin/` |
+| A6, A7, A8 | Read the `a6_diffusion_swin` feature cache. A6 and A7 are retrained, because their classical projection is `Linear(768, 64)` |
+| P | Read from the Swin-T Step 16 summary |
+
+The Step 21 training runs, the A3–A5 links, and the `a6_diffusion_swin` cache must already exist. No script in the repository creates them (see [Known Limitations](#known-limitations)).
+
+**Steps 22–23: research-question mapping and statistics**
+
+These steps have no Swin-specific configs. Point them at the Swin-T analysis root instead:
+
+```bash
+python src/analyze.py analysis=step22_rq_mapping analysis.analyze_root=logs/analyze/runs_swin
+python src/analyze.py analysis=step23_statistics analysis.ablation_dir=logs/analyze/runs_swin/step21_ablation
+```
+
+Step 22 looks for each stage's summary under its standard (non-`_swin`) name inside `analyze_root`. You must place the Swin-T results under `logs/analyze/runs_swin/<stage>/` yourself.
+
+**Paired comparison of the two arms**
+
+Step 16 writes `test_predictions.npz` for each arm on the same 990-image test split. `src/utils/statistics.py` can compare them directly:
+
+```bash
+python - <<'PY'
+import numpy as np
+from src.utils.statistics import mcnemar_test, paired_bootstrap
+
+base = np.load("logs/analyze/runs/step16_internal/test_predictions.npz")
+swin = np.load("logs/analyze/runs/step16_internal_swin/seed_42/test_predictions.npz")
+assert np.array_equal(base["y_true"], swin["y_true"]), "different test sets - not pairable"
+print(mcnemar_test(base["y_true"], base["y_pred"], swin["y_pred"]))
+print(paired_bootstrap(base["y_true"], base["y_pred"], swin["y_pred"]))
+PY
+```
+
+Report this as a single planned comparison. It is not part of the Step 23 Holm-corrected family.
+
+### EfficientNet-B0 arm
+
+The comparison arm runs through the pipeline runner exactly as on `main`:
+
+```bash
+python scripts/kaggle_pipeline.py --profile smoke   # quick wiring check (logs/_smoke/)
+python scripts/kaggle_pipeline.py --profile full    # fixed protocol, seeds 42/123/7 (logs/)
 ```
 
 | Profile | Behavior | Output root | Reportable |
@@ -448,119 +649,35 @@ python scripts/kaggle_pipeline.py --profile full          # intended study run
 | `fast` (**default**) | Max 8 epochs, patience 4, seed 42 | `logs/_fast/` | No |
 | `full` | Fixed protocol, seeds 42, 123, 7 | `logs/` | Yes |
 
-Frequently used options:
+Useful runner options include:
+- stage selection: `--only`, `--from`, `--until`, `--skip`
+- run control: `--seeds`, `--budget-hours`, `--keep-going`, `--force`, `--force-test`, `--no-bundle`
+- devices: `--accelerator`, `--quantum-accelerator`
+- forcing selections: `--recipe`, `--imbalance`, `--loss`
+- Step 6 confirmation: `--confirm-recipes`
+- Kaggle: `--restore-from`, `--setup-data`
 
-| Option | Description |
-|---|---|
-| `--only`, `--from`, `--until`, `--skip` | Select stages by id, group (e.g. `step13`), or prefix |
-| `--seeds 42,123` | Override the profile's seeds |
-| `--budget-hours 11` | Wall-clock budget (default 11 h) |
-| `--accelerator {auto,gpu,cpu}` | Device for classical stages |
-| `--quantum-accelerator {cpu,gpu}` | Device for quantum stages (default `cpu`) |
-| `--num-workers N` | Dataloader workers (default `0`) |
-| `--recipe`, `--imbalance`, `--loss` | Force a selection instead of reading it from a study |
-| `--confirm-recipes`, `--confirm-top-k`, `--confirm-seeds` | Control the Step 6 real-backbone confirmation |
-| `--force` | Re-run stages already marked done |
-| `--force-test` | Override the once-only Step 16 test lock (recorded in the summary) |
-| `--keep-going` | Continue past failing stages |
-| `--restore-from DIR` | Copy a previous session's logs and caches in before running |
-| `--setup-data` | Find attached Kaggle datasets, link them into `data/raw/`, then exit |
-| `--no-bundle`, `--bundle-to DIR` | Control the results archive |
+Exit codes: `0` finished, `1` a required stage failed, `2` time budget used up (re-run to continue), `130` interrupted.
 
-Exit codes: `0` finished, `1` a required stage failed, `2` time budget used up (re-run the same command to continue), `130` interrupted.
-
-Choosing a stage does **not** run its missing prerequisites automatically.
-
-### Option B: Run stages manually
-
-#### Selection studies
-
-```bash
-python src/analyze.py analysis=step06_preprocessing
-python src/analyze.py analysis=step08_imbalance
-python src/prepare_dataset.py recipe=clahe     # example: materialize a recipe into data/processed/clahe
-```
-
-The Step 6 proxy only ranks candidates; real-backbone confirmation is a separate stage (`analysis=step06_confirm`). The CLAHE command only shows how to materialize a recipe. It does not mean CLAHE is the chosen treatment.
-
-#### Baselines (Step 9)
-
-```bash
-python src/train.py experiment=step09_baselines model=baseline_simple_cnn seed=42 logger=csv test=false
-
-python src/train.py experiment=step09_baselines model=baseline_efficientnet_b0 \
-    trainer=gpu seed=42 logger=csv test=false
-
-# three-seed sweep
-python src/train.py -m experiment=step09_baselines model=baseline_efficientnet_b0 \
-    seed=42,123,7 trainer=gpu logger=csv test=false
-```
-
-Available baseline models: `baseline_simple_cnn`, `baseline_resnet50`, `baseline_efficientnet_b0`, `baseline_vit`, `baseline_swin`, `baseline_fixed_qcnn`, `baseline_fixed_multiscale`.
-
-#### Feature branches (Steps 10–12)
-
-```bash
-python src/train.py experiment=step10_classical seed=42 logger=csv test=false
-python src/train.py experiment=step12_adaptive_quantum seed=42 logger=csv test=false
-```
-
-Use the same preprocessing settings for training, feature extraction, and evaluation.
-
-#### Feature extraction and fusion (Steps 13–15)
-
-```bash
-python src/extract_features.py \
-    classical_ckpt=logs/train/runs/<step10 run> \
-    quantum_ckpt=logs/train/runs/<step12 run>
-
-python src/analyze.py analysis=step13_fusion analysis.tag=default
-python src/analyze.py analysis=step14_loss_selection analysis.tag=default
-```
-
-The final model uses `experiment=step15_final_protocol`, and its loss must match the Step 14 decision. The runner handles this automatically:
-
-```bash
-python scripts/kaggle_pipeline.py --profile full --only features
-python scripts/kaggle_pipeline.py --profile full --only step15
-```
-
-#### Evaluation (Steps 16–17)
-
-```bash
-python scripts/kaggle_pipeline.py --profile full --only step16_internal
-python scripts/kaggle_pipeline.py --profile full --only step17_external   # needs the Figshare data
-```
-
-Step 16 writes a `test_evaluated.lock` to stop that analysis from running the test set twice. Generic training, `src/eval.py`, and other analyses do not check this lock.
-
-[`src/eval.py`](src/eval.py) evaluates a single checkpoint on the test split. `ckpt_path` is required, and `model`/`data` must match the checkpoint:
-
-```bash
-python src/eval.py model=baseline_simple_cnn ckpt_path=<path/to/checkpoint.ckpt>
-```
-
-For a detailed walkthrough of every step, see [USAGE.md](USAGE.md).
+[USAGE.md](USAGE.md) documents every EfficientNet-B0 stage in detail.
 
 ---
 
 ## Scripts and Commands
 
-### Entry points
-
 | Command | Purpose |
 |---|---|
 | `python src/train.py [overrides]` | Train a model (`-m` for multirun sweeps) |
-| `python src/eval.py ckpt_path=… [overrides]` | Evaluate a checkpoint on the test split |
-| `python src/analyze.py analysis=<stepXX_…>` | Run one analysis stage |
-| `python src/extract_features.py classical_ckpt=… quantum_ckpt=…` | Build a feature cache |
+| `python src/eval.py ckpt_path=… model=…` | Evaluate one checkpoint on the test split |
+| `python src/analyze.py analysis=<config>` | Run one analysis stage |
+| `python src/extract_features.py [--config-name extract_features_swin] …` | Build a feature cache |
 | `python src/prepare_dataset.py recipe=<name>` | Materialize a preprocessing recipe |
-| `python scripts/kaggle_pipeline.py [options]` | Run the orchestrated pipeline |
+| `python scripts/kaggle_pipeline.py [options]` | Run the orchestrated (EfficientNet-B0) pipeline |
 | `python scripts/make_kaggle_notebook.py` | Regenerate `notebooks/kaggle_run.ipynb` |
 
-Analysis configs: `step04_audit`, `step06_preprocessing`, `step06_confirm`, `step08_imbalance`, `step10_embeddings`, `step11_gate_morphology`, `step13_fusion`, `step14_loss_selection`, `step16_internal`, `step17_external`, `step18_robustness`, `step19_explainability`, `step20_quantum_advantage`, `step21_ablation`, `step22_rq_mapping`, `step23_statistics`, `step24_receptive_field`, `step25_quantum_circuit_ablation`.
+Swin-T configs: `experiment=step10_classical_swin`, `experiment=step15_final_protocol_swin`, `--config-name extract_features_swin`, and `analysis=` with `step13_fusion_swin`, `step14_loss_selection_swin`, `step16_internal_swin`, `step17_external_swin`, `step18_robustness_swin`, `step19_explainability_swin`, `step20_quantum_advantage_swin`, `step21_ablation_swin`.
 
-### Makefile
+Makefile targets:
 
 | Target | Command |
 |---|---|
@@ -582,14 +699,13 @@ Analysis configs: `step04_audit`, `step06_preprocessing`, `step06_confirm`, `ste
 | External images | `data/raw/figshare/*.mat` |
 | Split table | `data/splits/dataset_split.csv` |
 | Processed images | `data/processed/<recipe>/` (+ `recipe_manifest.json`) |
-| Feature caches | `data/features/<tag>/{train,val,test}.pt` (+ `manifest.json`) |
-| Single runs | `logs/<task>/runs/<timestamp>/` |
-| Multiruns | `logs/<task>/multiruns/<timestamp>/` |
-| Runner stages | Fixed directories, e.g. `logs/train/runs/step15_final/seed_42/` |
+| Feature caches | `data/features/swin/` (Swin-T), `data/features/default/` (EfficientNet-B0), each with `{train,val,test}.pt` + `manifest.json` |
+| Pinned training runs | `logs/train/runs/<stage>/seed_<n>/` |
+| Pinned analysis runs | `logs/analyze/runs/<stage>[_swin]/`, `logs/analyze/runs_swin/` |
+| Unpinned runs | `logs/<task>/runs/<timestamp>/`, `logs/<task>/multiruns/<timestamp>/` |
+| Step 16 predictions | `test_predictions.npz` (`y_true`, `y_pred`, `y_prob`) in each Step 16 run directory |
 | Runner state | `<log root>/pipeline/manifest.json`, `REPORT.md`, `.pipeline_done.json` markers |
-| Results bundle | `thesis_results_<timestamp>.zip` |
-
-Training runs save checkpoints, the resolved config, and logs. Analyses write JSON summaries, CSV tables, and figures. The results bundle contains only lightweight files (JSON, CSV, PNG, Markdown, YAML, logs, SVG, PDF). It leaves out checkpoints and tensor caches, so you cannot restore training from the bundle alone.
+| Results bundle | `thesis_results_<timestamp>.zip` (JSON, CSV, figures, logs; no checkpoints or `.pt` caches) |
 
 ---
 
@@ -598,13 +714,15 @@ Training runs save checkpoints, the resolved config, and logs. Analyses write JS
 The test suite uses **pytest**. Settings are in [`pyproject.toml`](pyproject.toml) and include `--doctest-modules` and a `slow` marker.
 
 ```bash
-python -m pytest tests/ -q                  # full suite
-python -m pytest tests/ -m "not slow" -q    # skip tests marked slow
+python -m pytest tests/ -q                                # full suite
+python -m pytest tests/ -m "not slow" -q                  # skip tests marked slow
+python -m pytest tests/test_grad_cam_target_layer.py -v   # Swin-T Grad-CAM layout and config wiring
+python -m pytest tests/test_baselines.py -k swin -v       # Swin-T baseline
 ```
 
-The tests cover data splitting and leakage, transforms, preprocessing, losses, model shapes and gradients, branches, fusion, configuration and protocol consistency, checkpoints, resume safety, orchestration, evaluation, explainability, ablation matrices, and statistics.
+The tests cover data splitting and leakage, transforms, preprocessing, losses, model shapes and gradients, branches, fusion, configuration and protocol consistency, checkpoints, resume safety, orchestration, evaluation, explainability, ablation matrices, and statistics. `test_grad_cam_target_layer.py` checks that Grad-CAM hooks Swin-T's channels-first `permute` output rather than its channels-last stage output.
 
-Some tests train models, use synthetic data, or need optional dependencies, existing data, or a GPU. Skipping slow tests does not make the run fully self-contained.
+Some tests train models or need optional dependencies, existing data, or a GPU. Skipping slow tests does not make the run fully self-contained.
 
 **Continuous integration:** `.github/workflows/test.yml` runs `pytest` on Ubuntu, macOS, and Windows, and uploads coverage to Codecov. Code-quality workflows run `pre-commit`.
 
@@ -612,15 +730,21 @@ Some tests train models, use synthetic data, or need optional dependencies, exis
 
 ## Running on Kaggle
 
-The project has no server deployment. The supported remote execution target is a Kaggle notebook:
+The project has no server deployment. The supported remote execution target is a Kaggle notebook ([`notebooks/kaggle_run.ipynb`](notebooks/kaggle_run.ipynb)), with a GPU accelerator and internet enabled.
 
-1. Open [`notebooks/kaggle_run.ipynb`](notebooks/kaggle_run.ipynb) on Kaggle with a GPU accelerator and internet enabled.
-2. Attach the primary dataset (and optionally Figshare) as inputs.
-3. Set `PROFILE` in the settings cell (`smoke`, `fast`, or `full`) and use **Run All**.
-4. The notebook clones the repository, installs the missing packages, links the datasets (`--setup-data`), runs the tests, runs the pipeline, and writes a results bundle.
-5. To resume after the 12-hour limit, use **Save Version**, attach that output as an input next session, and run again. Finished stages are skipped.
+For the Swin-T arm:
 
-The notebook is generated from `scripts/make_kaggle_notebook.py`. Edit that script, not the `.ipynb`. Some of the notebook's guidance is out of date (see [Known Limitations](#known-limitations)).
+1. Attach as inputs:
+   - the saved notebook output that contains the Step 12 checkpoints (`logs/train/runs/step12_adaptive_quantum/**/checkpoints/*.ckpt`)
+   - the primary dataset
+   - the Figshare dataset
+
+   A `thesis_results_*.zip` bundle is not enough, because it contains no `.ckpt` or `.pt` files.
+2. In the settings cell, set `BRANCH = "swin-backbone"` and `EXTRA_ARGS = ["--list"]`. The notebook then clones this branch, restores the previous session, and exits without running the EfficientNet-B0 pipeline.
+3. Run the [Swin-T arm](#swin-t-arm) commands from `/kaggle/working/thesis`.
+4. Use **Save Version** to keep checkpoints and caches for the next session.
+
+The notebook is generated from `scripts/make_kaggle_notebook.py`. Edit that script, not the `.ipynb`.
 
 ---
 
@@ -630,61 +754,63 @@ These are not part of this repository:
 
 - **REST/HTTP API:** none. Everything runs from the command line.
 - **Authentication and authorization:** none. The only credentials are Kaggle API keys (and optional logger tokens) used by external tools.
-- **Database:** none. Data lives in files (see [Inputs and Outputs](#inputs-and-outputs)).
+- **Database:** none. Data lives in files.
 - **Web/production deployment:** none. Docker files and serving code are not included.
 
 ---
 
-## Recorded Dataset Observations
+## Recorded Observations
 
-The [reference notebook](notebooks/mri_thesis_notebook.ipynb), [USAGE.md](USAGE.md), and [docs/DEVIATIONS.md](docs/DEVIATIONS.md) record these dataset properties:
+The repository records these values in its documentation and configuration files. Result files are not committed, and this README does not verify these numbers again.
 
-| Property | Recorded value |
-|---|---:|
-| Images before deduplication | 7,023 |
-| Unique images after exact deduplication | 6,597 |
-| Train / validation / test | 4,617 / 990 / 990 |
-| Image dimensions | 224×224 |
-| Color mode / bit depth | RGB / 8-bit |
+| Observation | Value | Source |
+|---|---|---|
+| Images before / after exact deduplication | 7,023 / 6,597 | `USAGE.md`, `docs/DEVIATIONS.md`, reference notebook |
+| Train / validation / test | 4,617 / 990 / 990 | `docs/IMPLEMENTATION_PLAN.md` |
+| Image format | 224×224, RGB, 8-bit | `docs/DEVIATIONS.md` |
+| Step 9 validation macro-F1, Swin-T | 99.07 ± 0.10 | `configs/model/branch_classical_swin.yaml`, `docs/SWIN_EXPERIMENT.md` |
+| Step 9 validation macro-F1, EfficientNet-B0 | 98.71 ± 0.22 | same |
+| Step 20 quantum-branch effect (McNemar) | Harmful under EfficientNet-B0 (p = 0.039); neutral under Swin-T (p = 1.0) | Commit `3ff091e` message |
 
-These numbers come from earlier runs. This README does not verify them again.
-
-Earlier pipeline result bundles (`thesis_results_*`) are git-ignored and **not included** in this repository. **This repository does not establish any full-protocol performance benchmark or any quantum-advantage claim.** Do not report smoke or fast runs as thesis results.
+Swin-T's Step 16 test results are not recorded in the repository. When you report them, use the mean ± SD over seeds 42, 123, and 7. On 990 test images, a 0.5-point difference is about five images, so use the paired test above before calling any gap between the arms significant.
 
 ---
 
 ## Known Limitations
 
+### Swin-T arm
+
+- **The pipeline runner has no Swin-T stages.** The Swin-T arm is run by hand with pinned `hydra.run.dir` paths. Driving it through `kaggle_pipeline.py` would collide with the EfficientNet-B0 completion markers.
+- **Step 21 needs manual preparation.** No script creates the `a6_diffusion_swin` feature cache, the A3–A5 links under `logs/train/runs/step21_ablation_swin/`, or the retrained Swin-T rows.
+- **Steps 22–23 reuse the EfficientNet-B0 configs.** Step 22 expects standard stage names under `analyze_root`, so Swin-T summaries must be arranged under `logs/analyze/runs_swin/` by hand.
+- **The arm comparison is outside the Step 23 family.** The head-to-head paired test is a separate planned comparison, not part of the Holm-corrected family.
+- **`docs/SWIN_EXPERIMENT.md` §5 is out of date.** It says Steps 21–23 are not wired for Swin-T, but commit `3ff091e` added `step21_ablation_swin.yaml` and the `feature_tags` override.
+- **A config comment points to a missing test.** `step20_quantum_advantage_swin.yaml` mentions `tests/test_quantum_advantage_protocol.py`, which does not exist in the repository.
+
 ### Experimental validity
 
-- **Test access is not globally sealed.** Training runs the test set after fitting by default, and some earlier analyses read the test split.
-- **Preprocessing decisions are applied inconsistently.** The main training stages use the proxy selection, while Steps 24–25 require the real-backbone confirmation.
+- **Test access is not globally sealed.** Training runs the test set after fitting by default (`test: True`), and some earlier analyses read the test split.
+- **Preprocessing decisions are applied inconsistently.** The main training stages use the proxy selection, while Steps 24–25 require the real-backbone confirmation. The Swin-T arm trains on raw images (`recipe: null`).
 - **The final classifier always uses concatenation.** If gated or SE fusion wins in Step 13, the final fusion architecture does not change.
 - **Splits are not grouped by patient.** Exact-file deduplication does not handle related slices, near-duplicates, or overlap between the primary and external datasets.
-- **The imbalance proxy is balanced by construction.** Because it samples classes equally, it says little about imbalance in the original dataset.
-- **Final-head seeds share cached branch features.** They are not independent retrainings of the whole pipeline.
-- **Some ablations change more than one factor or differ in capacity.** Conclusions should account for this.
+- **Final-head seeds share cached branch features.** Every Swin-T Step 15 seed trains on features from the seed-42 Step 10 and Step 12 checkpoints, so they are not independent retrainings of the whole pipeline.
+- **Some ablations change more than one factor or differ in capacity.**
 
 ### Execution and reproducibility
 
-- Confirmation stages are built before a fresh proxy run produces its ranking. On a fresh workspace, a single invocation can fail at confirmation. Re-run it after the ranking exists, or pass `--confirm-recipes`.
-- With `--keep-going`, failed stages may not change the final exit code. The Kaggle notebook does not stop when tests fail.
+- With `--keep-going`, failed stages may not change the runner's exit code. The Kaggle notebook does not stop when tests fail.
 - Completion markers do not fully check configuration, code, dataset, checkpoint, or cache provenance.
-- Stage resumption does not fully check that processed images and feature caches exist.
-- The `a6_diffusion` ablation feature tag is shared across profiles.
 - Dependencies are not fully pinned. The Conda file, package metadata, and MNIST examples are still template content.
 - The CI matrix includes Python 3.8, which the code does not support (it uses `str.removesuffix`, which needs Python 3.9 or newer). Some CI tests also need data or artifacts the workflow does not provide.
 
 ### Evaluation and reporting
 
 - External and robustness evaluation do not always apply the selected preprocessing.
-- Attention-rollout helpers exist in `src/models/components/explain.py` but the explainability study does not use them.
+- Attention-rollout helpers exist but the explainability study does not use them.
 - Morphology analysis uses threshold-derived proxy regions, not verified tumor masks.
 - Cached-feature timing does not include the full cost of quantum-simulator inference.
-- Some statistical pairing checks compare labels without sample identifiers.
-- The earlier research-question report does not include Steps 24–25.
 
-See [docs/DEVIATIONS.md](docs/DEVIATIONS.md) for documented decisions and open items.
+See [docs/DEVIATIONS.md](docs/DEVIATIONS.md) and [docs/SWIN_EXPERIMENT.md](docs/SWIN_EXPERIMENT.md) for details.
 
 ---
 
@@ -692,41 +818,43 @@ See [docs/DEVIATIONS.md](docs/DEVIATIONS.md) for documented decisions and open i
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `Raw dataset not found at …` | Dataset not downloaded, or nested in an unexpected place | Run the download script, or set `data.raw_subdir=raw/bt_mri/<subfolder>` |
+| `manifest.json` shows `classical_dim: 1280` for the Swin-T cache | `extract_features.py` ran without `--config-name extract_features_swin` | Re-run with the Swin-T config |
+| `size mismatch` at `load_state_dict` | A Swin-T checkpoint was loaded with an EfficientNet-B0 config, or the other way round | Use the `*_swin` configs for every Swin-T stage |
+| Step 16 refuses to run again | `test_evaluated.lock` beside the fusion checkpoint | Expected: one test per checkpoint. Check the paths instead of forcing |
+| Swin-T arm can't find `step12_adaptive_quantum` | Step 12 checkpoint not restored | Attach the notebook output that contains `.ckpt` files (not the zip bundle) |
+| `Raw dataset not found at …` | Dataset not downloaded or nested unexpectedly | Run the download script, or set `data.raw_subdir` |
 | `Split table not found at …` | Step 4 not run | `python src/analyze.py analysis=step04_audit` |
-| `Image root not found … Materialise recipe` | `data.recipe` set but mirror missing | `python src/prepare_dataset.py recipe=<name>` |
-| `Step 15 needs the loss Step 14 selected` | Step 14 not run | Run `step14_loss_selection`, or pass `--loss` |
 | `ModuleNotFoundError: shap` during Step 19 | SHAP is not in `requirements.txt` | `pip install shap` |
-| `<role> checkpoint is required` from `extract_features.py` | Missing `classical_ckpt` / `quantum_ckpt` | Pass both run directories or `.ckpt` files |
-| Quantum stages are very slow | Five circuits are simulated on CPU for every image | Expected. Keep `--quantum-accelerator cpu` and use cached features for fusion |
-| Dataloader hangs with workers > 0 | Little shared memory (common on Kaggle) | Keep `num_workers=0` (the default) |
+| Quantum stages are very slow | Five circuits are simulated on CPU for every image | Expected. Reuse the Step 12 checkpoint and cached features |
+| Dataloader hangs with workers > 0 | Little shared memory (common on Kaggle) | Keep `data.num_workers=0` |
 | Runner exits with code `2` | Time budget used up | Re-run the same command; finished stages are skipped |
-| `kaggle` CLI not found | Not installed | `pip install kaggle` |
 
 ---
 
 ## Contributing
 
-1. Create a feature branch from `main`.
+1. Create a feature branch from `swin-backbone` (or `main` for changes shared by both arms).
 2. Keep changes focused and fill in the [pull request template](.github/PULL_REQUEST_TEMPLATE.md).
-3. Run the tests and the configured hooks before opening a PR:
+3. Run the tests and hooks before opening a PR:
 
    ```bash
    python -m pytest tests/ -q
    pre-commit run -a      # some hooks modify files
    ```
 
-4. Changes to the fixed protocol, splits, preprocessing, or model-selection rules can invalidate downstream results. Record methodological changes in [docs/DEVIATIONS.md](docs/DEVIATIONS.md) and regenerate the affected artifacts.
-5. Never commit dataset credentials, `.env` files, or other secrets.
+4. Keep the arms isolated. A Swin-T change must not modify an EfficientNet-B0 config, cache, or run path.
+5. Changes to the fixed protocol, splits, preprocessing, or model-selection rules can invalidate downstream results. Record them in [docs/DEVIATIONS.md](docs/DEVIATIONS.md).
+6. Never commit dataset credentials, `.env` files, or other secrets.
 
 ---
 
 ## Documentation
 
 - [Research specification](docs/Instruction%20BY%20asif%20vai.md): the source of truth for the study design
+- [Swin-T experiment guide](docs/SWIN_EXPERIMENT.md): execution guide for the Swin-T arm
 - [Implementation plan](docs/IMPLEMENTATION_PLAN.md): how the reference notebook maps onto this repository
 - [Deviation register](docs/DEVIATIONS.md): deliberate departures and open items
-- [Detailed usage guide](USAGE.md): step-by-step commands (some passages describe older states)
+- [Detailed usage guide](USAGE.md): step-by-step commands for the EfficientNet-B0 arm
 - [Historical research notebook](notebooks/mri_thesis_notebook.ipynb)
 - [Kaggle execution notebook](notebooks/kaggle_run.ipynb)
 
