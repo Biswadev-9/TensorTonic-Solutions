@@ -1,4 +1,4 @@
-# Brain MRI Classification with Multiscale and Quantum Feature Fusion
+ # Brain MRI Classification with Multiscale and Quantum Feature Fusion
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-Lightning-792ee5)
